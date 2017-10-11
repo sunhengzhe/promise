@@ -1,0 +1,23 @@
+{
+  "name": "sun-promise",
+  "version": "1.0.0",
+  "description": "",
+  "main": "app.js",
+  "scripts": {
+    "test": "promises-aplus-tests promise"
+  },
+  "devDependencies": {
+    "eslint": "^4.8.0",
+    "eslint-config-standard": "^10.2.1",
+    "eslint-plugin-import": "^2.7.0",
+    "eslint-plugin-node": "^5.2.0",
+    "eslint-plugin-promise": "^3.5.0",
+    "eslint-plugin-standard": "^3.0.1",
+    "promises-aplus-tests": "*"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "is-callable": "^1.1.3"
+  }
+}
