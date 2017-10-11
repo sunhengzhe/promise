@@ -4,6 +4,10 @@ function isObject (obj) {
     return typeof obj === 'object';
 }
 
+function isFunction (func) {
+    return typeof func === 'function';
+}
+
 function IsPromise (promise) {
     return promise instanceof Promise;
 }
@@ -82,7 +86,7 @@ function PromiseReactionJob (reaction, argument) {
     const type = reaction.Type;
     const handler = reaction.Handler;
 
-    if (handler === undefined) {
+    if (!handler) {
         if (type === 'Fulfill') {
             promiseCapability.Resolve.call(undefined, argument);
         } else if (type === 'Reject') {
@@ -98,13 +102,14 @@ function PromiseReactionJob (reaction, argument) {
     }
 }
 
-function PromiseResolveThenableJob (promise, resolution, thenAction) {
+function PromiseResolveThenableJob (promise, thenable, then) {
     const resolvingFunctions = CreateResolvingFunctions(promise);
     try {
-        return thenAction.call(resolution, resolvingFunctions.Resolve, resolvingFunctions.Reject);
+        return then.call(thenable, resolvingFunctions.Resolve, resolvingFunctions.Reject);
     } catch (error) {
-        const status = resolvingFunctions.Reject.call(undefined, error);
-        return status;
+        if (!resolvingFunctions.ResolveAlreadyResolved()) {
+            return resolvingFunctions.Reject.call(undefined, error);
+        }
     }
 }
 
@@ -126,8 +131,19 @@ function CreateResolvingFunctions (promise) {
     reject.setAlreadyResolved(alreadyResolved);
 
     return {
-        Resolve: resolve.Function,
-        Reject: reject.Function
+        Resolve: function (...args) {
+            if (reject.getAlreadyResolved()) {
+                return;
+            }
+            resolve.Function(...args);
+        },
+        Reject: function (...args) {
+            if (resolve.getAlreadyResolved()) {
+                return;
+            }
+            reject.Function(...args);
+        },
+        ResolveAlreadyResolved: resolve.getAlreadyResolved
     }
 }
 
@@ -137,6 +153,7 @@ function getPromiseResolveFunctions () {
     return {
         setPromise: (value) => (Promise = value),
         setAlreadyResolved: (value) => (AlreadyResolved = value),
+        getAlreadyResolved: () => AlreadyResolved,
         Function: function (resolution) {
             const promise = Promise;
             const alreadyResolved = AlreadyResolved;
@@ -152,19 +169,27 @@ function getPromiseResolveFunctions () {
                 return RejectPromise(promise, selfResolutionError);
             }
 
-            if (!isObject(resolution)) {
+            if (resolution === null) {
                 return FulfillPromise(promise, resolution);
             }
 
-            const thenAction = resolution.then;
-
-            if (!isCallable(thenAction)) {
+            if (!isObject(resolution) && !isFunction(resolution)) {
                 return FulfillPromise(promise, resolution);
             }
 
-            setImmediate(function () {
-                PromiseResolveThenableJob(promise, resolution, thenAction)
-            });
+            try {
+                const thenAction = resolution.then;
+
+                if (!isCallable(thenAction)) {
+                    return FulfillPromise(promise, resolution);
+                }
+
+                setImmediate(function () {
+                    PromiseResolveThenableJob(promise, resolution, thenAction)
+                });
+            } catch (error) {
+                return RejectPromise(promise, error);
+            }
         }
     }
 }
@@ -175,6 +200,7 @@ function getPromiseRejectFunctions () {
     return {
         setPromise: (value) => (Promise = value),
         setAlreadyResolved: (value) => (AlreadyResolved = value),
+        getAlreadyResolved: () => AlreadyResolved,
         Function: function (reason) {
             const promise = Promise;
             const alreadyResolved = AlreadyResolved;
@@ -191,7 +217,12 @@ function getPromiseRejectFunctions () {
 }
 
 function FulfillPromise (promise, value) {
+    if (promise.PromiseState !== 'pending') {
+        return;
+    }
+
     const reactions = promise.PromiseFulfillReactions;
+
     promise.PromiseResult = value;
     promise.PromiseFulfillReactions = undefined;
     promise.PromiseRejectReactions = undefined;
@@ -201,6 +232,10 @@ function FulfillPromise (promise, value) {
 }
 
 function RejectPromise (promise, reason) {
+    if (promise.PromiseState !== 'pending') {
+        return;
+    }
+
     const reactions = promise.PromiseRejectReactions;
 
     promise.PromiseResult = reason;
@@ -217,7 +252,7 @@ function RejectPromise (promise, reason) {
 
 function HostPromiseRejectionTracker (promise, operation) {
     // do nothing
-    console.log('HostPromiseRejectionTracker is invoked:', operation);
+    console.log('UnhandledPromiseRejectionWarning:', operation);
 }
 
 /**
@@ -268,8 +303,6 @@ function PerformPromiseThen (promise, onFulfilled, onRejected, resultCapability)
         Type: 'Reject',
         Handler: onRejected
     };
-
-    console.log('state:', promise.PromiseState);
 
     if (promise.PromiseState === 'pending') {
         promise.PromiseFulfillReactions.push(fulfillReaction);

@@ -7,5 +7,4 @@
 npm run test
 ```
 
-> 842 passing (17s)
-> 30 failing
+> 872 passing
