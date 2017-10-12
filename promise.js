@@ -8,9 +8,20 @@ function isFunction (func) {
     return typeof func === 'function';
 }
 
-function IsPromise (promise) {
+function isPromise (promise) {
     return promise instanceof Promise;
 }
+
+const PROMISE_STATE = {
+    PENDING: 'pending',
+    FULFILLED: 'fulfilled',
+    REJECTED: 'rejected'
+};
+
+const REACTION_TYPE = {
+    FULFILL: 'Fulfill',
+    REJECT: 'Reject'
+};
 
 function Promise (executor) {
     if (!new.target) {
@@ -22,95 +33,31 @@ function Promise (executor) {
     }
 
     const promise = Object.create(new.target.prototype, {
-        PromiseState: {
-            value: 'pending',
+        '[[PromiseState]]': {
+            value: PROMISE_STATE.PENDING,
             writable: true
         },
-        PromiseFulfillReactions: {
+        '[[PromiseFulfillReactions]]': {
             value: []
         },
-        PromiseRejectReactions: {
+        '[[PromiseRejectReactions]]': {
             value: []
         },
-        PromiseIsHandled: {
+        '[[PromiseIsHandled]]': {
             value: false,
             writable: true
         }
     });
 
-    const resolvingFunctions = CreateResolvingFunctions(promise);
+    const resolvingFunctions = createResolvingFunctions(promise);
 
     try {
-        executor.call(undefined, resolvingFunctions.Resolve, resolvingFunctions.Reject);
+        executor(resolvingFunctions.resolve, resolvingFunctions.reject);
     } catch (err) {
-        resolvingFunctions.Reject.call(undefined, err);
+        resolvingFunctions.reject(err);
     }
 
     return promise;
-}
-
-Promise.prototype.then = function (onFulfilled, onRejected) {
-    const promise = this;
-    if (!IsPromise(promise)) {
-        throw new TypeError('!IsPromise(promise)');
-    }
-
-    // 创建一个新的 promise 用于 promise chain 的后续执行
-    const resultCapability = NewPromiseCapability();
-    return PerformPromiseThen(promise, onFulfilled, onRejected, resultCapability);
-}
-
-Promise.resolve = function (x) {
-    const promiseCapability = NewPromiseCapability();
-
-    promiseCapability.Resolve.call(undefined, x);
-
-    return promiseCapability.Promise;
-}
-
-Promise.reject = function (r) {
-    const promiseCapability = NewPromiseCapability();
-
-    promiseCapability.Reject.call(undefined, r);
-
-    return promiseCapability.Promise;
-}
-
-/**
- * 执行 promise reaction 的函数
- * @param {any} reaction reaction
- * @param {any} argument value or reason
- */
-function PromiseReactionJob (reaction, argument) {
-    const promiseCapability = reaction.Capability;
-    const type = reaction.Type;
-    const handler = reaction.Handler;
-
-    if (!handler) {
-        if (type === 'Fulfill') {
-            promiseCapability.Resolve.call(undefined, argument);
-        } else if (type === 'Reject') {
-            promiseCapability.Reject.call(undefined, argument);
-        }
-    } else {
-        try {
-            const handlerResult = handler.call(undefined, argument);
-            promiseCapability.Resolve.call(undefined, handlerResult);
-        } catch (error) {
-            promiseCapability.Reject.call(undefined, error);
-        }
-    }
-}
-
-function PromiseResolveThenableJob (promise, thenable, then) {
-    const resolvingFunctions = CreateResolvingFunctions(promise);
-    try {
-        return then.call(thenable, resolvingFunctions.Resolve, resolvingFunctions.Reject);
-    } catch (error) {
-        if (!resolvingFunctions.ResolveAlreadyResolved()) {
-            return resolvingFunctions.Reject.call(undefined, error);
-        }
-    }
 }
 
 /**
@@ -119,140 +66,92 @@ function PromiseResolveThenableJob (promise, thenable, then) {
  * @param {any} promise promise
  * @returns { resolve, reject }
  */
-function CreateResolvingFunctions (promise) {
-    const alreadyResolved = false;
+function createResolvingFunctions (promise) {
+    let alreadySettled = false;
 
-    const resolve = getPromiseResolveFunctions();
-    resolve.setPromise(promise);
-    resolve.setAlreadyResolved(alreadyResolved);
-
-    const reject = getPromiseRejectFunctions();
-    reject.setPromise(promise);
-    reject.setAlreadyResolved(alreadyResolved);
-
-    return {
-        Resolve: function (...args) {
-            if (reject.getAlreadyResolved()) {
-                return;
-            }
-            resolve.Function(...args);
-        },
-        Reject: function (...args) {
-            if (resolve.getAlreadyResolved()) {
-                return;
-            }
-            reject.Function(...args);
-        },
-        ResolveAlreadyResolved: resolve.getAlreadyResolved
-    }
-}
-
-function getPromiseResolveFunctions () {
-    let Promise;
-    let AlreadyResolved;
-    return {
-        setPromise: (value) => (Promise = value),
-        setAlreadyResolved: (value) => (AlreadyResolved = value),
-        getAlreadyResolved: () => AlreadyResolved,
-        Function: function (resolution) {
-            const promise = Promise;
-            const alreadyResolved = AlreadyResolved;
-
-            if (alreadyResolved) {
-                return;
-            }
-
-            AlreadyResolved = true;
-
-            if (resolution === promise) {
-                const selfResolutionError = new TypeError('resolution === promise');
-                return RejectPromise(promise, selfResolutionError);
-            }
-
-            if (resolution === null) {
-                return FulfillPromise(promise, resolution);
-            }
-
-            if (!isObject(resolution) && !isFunction(resolution)) {
-                return FulfillPromise(promise, resolution);
-            }
-
-            try {
-                const thenAction = resolution.then;
-
-                if (!isCallable(thenAction)) {
-                    return FulfillPromise(promise, resolution);
-                }
-
-                setImmediate(function () {
-                    PromiseResolveThenableJob(promise, resolution, thenAction)
-                });
-            } catch (error) {
-                return RejectPromise(promise, error);
-            }
+    const resolve = function (resolution) {
+        if (alreadySettled) {
+            return;
         }
-    }
-}
 
-function getPromiseRejectFunctions () {
-    let Promise;
-    let AlreadyResolved;
-    return {
-        setPromise: (value) => (Promise = value),
-        setAlreadyResolved: (value) => (AlreadyResolved = value),
-        getAlreadyResolved: () => AlreadyResolved,
-        Function: function (reason) {
-            const promise = Promise;
-            const alreadyResolved = AlreadyResolved;
+        alreadySettled = true;
 
-            if (alreadyResolved) {
-                return undefined;
+        if (resolution === promise) {
+            const selfResolutionError = new TypeError('resolution === promise');
+            return rejectPromise(promise, selfResolutionError);
+        }
+
+        if (resolution === null) {
+            return fulfillPromise(promise, resolution);
+        }
+
+        if (!isObject(resolution) && !isFunction(resolution)) {
+            return fulfillPromise(promise, resolution);
+        }
+
+        try {
+            const thenAction = resolution.then;
+
+            if (!isCallable(thenAction)) {
+                return fulfillPromise(promise, resolution);
             }
 
-            AlreadyResolved = true;
-
-            return RejectPromise(promise, reason);
+            setImmediate(function () {
+                promiseResolveThenableJob(promise, resolution, thenAction)
+            });
+        } catch (error) {
+            return rejectPromise(promise, error);
         }
+    };
+
+    const reject = function (reason) {
+        if (alreadySettled) {
+            return;
+        }
+
+        alreadySettled = true;
+
+        return rejectPromise(promise, reason);
+    }
+
+    return {
+        resolve,
+        reject
     }
 }
 
-function FulfillPromise (promise, value) {
-    if (promise.PromiseState !== 'pending') {
+function fulfillPromise (promise, value) {
+    if (promise['[[PromiseState]]'] !== PROMISE_STATE.PENDING) {
         return;
     }
 
-    const reactions = promise.PromiseFulfillReactions;
+    const reactions = promise['[[PromiseFulfillReactions]]'];
 
-    promise.PromiseResult = value;
-    promise.PromiseFulfillReactions = undefined;
-    promise.PromiseRejectReactions = undefined;
-    promise.PromiseState = 'fulfilled';
+    promise['[[PromiseResult]]'] = value;
+    promise['[[PromiseFulfillReactions]]'] = undefined;
+    promise['[[PromiseRejectReactions]]'] = undefined;
+    promise['[[PromiseState]]'] = PROMISE_STATE.FULFILLED;
 
-    return TriggerPromiseReactions(reactions, value);
+    return triggerPromiseReactions(reactions, value);
 }
 
-function RejectPromise (promise, reason) {
-    if (promise.PromiseState !== 'pending') {
+function rejectPromise (promise, reason) {
+    if (promise['[[PromiseState]]'] !== PROMISE_STATE.PENDING) {
         return;
     }
 
-    const reactions = promise.PromiseRejectReactions;
+    const reactions = promise['[[PromiseRejectReactions]]'];
 
-    promise.PromiseResult = reason;
-    promise.PromiseFulfillReactions = undefined;
-    promise.PromiseRejectReactions = undefined;
-    promise.PromiseState = 'rejected';
+    promise['[[PromiseResult]]'] = reason;
+    promise['[[PromiseFulfillReactions]]'] = undefined;
+    promise['[[PromiseRejectReactions]]'] = undefined;
+    promise['[[PromiseState]]'] = PROMISE_STATE.REJECTED;
 
-    if (!promise.PromiseIsHandled) {
-        HostPromiseRejectionTracker(promise, 'reject');
-    }
+    // if (!promise['[[PromiseIsHandled]]']) {
+    //     // HostPromiseRejectionTracker(promise, 'reject');
+    // }
 
-    return TriggerPromiseReactions(reactions, reason);
-}
-
-function HostPromiseRejectionTracker (promise, operation) {
-    // do nothing
-    console.log('UnhandledPromiseRejectionWarning:', operation);
+    return triggerPromiseReactions(reactions, reason);
 }
 
 /**
@@ -261,12 +160,109 @@ function HostPromiseRejectionTracker (promise, operation) {
  * @param {any} reactions resolve callbacks
  * @param {any} argument value or reason
  */
-function TriggerPromiseReactions (reactions, argument) {
+function triggerPromiseReactions (reactions, argument) {
     reactions.forEach(reaction => {
         setImmediate(function () {
-            PromiseReactionJob(reaction, argument);
+            promiseReactionJob(reaction, argument);
         });
     })
+}
+
+/**
+ * 执行 promise reaction 的函数
+ * @param {any} reaction reaction
+ * @param {any} argument value or reason
+ */
+function promiseReactionJob (reaction, argument) {
+    const {
+        capability,
+        type,
+        handler
+    } = reaction;
+
+    if (!handler) {
+        if (type === REACTION_TYPE.FULFILL) {
+            capability.resolve(argument);
+        } else if (type === REACTION_TYPE.REJECT) {
+            capability.reject(argument);
+        }
+    } else {
+        try {
+            const handlerResult = handler(argument);
+            capability.resolve(handlerResult);
+        } catch (error) {
+            capability.reject(error);
+        }
+    }
+}
+
+/**
+ * 执行 thenable 的 then 方法
+ *
+ * @param {any} promise
+ * @param {any} thenable
+ * @param {any} then
+ * @returns
+ */
+function promiseResolveThenableJob (promise, thenable, then) {
+    const resolvingFunctions = createResolvingFunctions(promise);
+    try {
+        return then.call(thenable, resolvingFunctions.resolve, resolvingFunctions.reject);
+    } catch (error) {
+        return resolvingFunctions.reject(error);
+    }
+}
+
+Promise.prototype.then = function (onFulfilled, onRejected) {
+    const promise = this;
+    if (!isPromise(promise)) {
+        throw new TypeError('!IsPromise(promise)');
+    }
+
+    // 创建一个新的 promise 用于 promise chain 的后续执行
+    const resultCapability = newPromiseCapability();
+    return performPromiseThen(promise, onFulfilled, onRejected, resultCapability);
+}
+
+/**
+ * 返回一个 promiseCapability
+ * 包含
+ * promise
+ * resolve：控制 promise 的 resolve
+ * reject：控制 promise 的 reject
+ * @returns promiseCapability
+ */
+function newPromiseCapability () {
+    const promiseCapability = {
+        promise: undefined,
+        resolve: undefined,
+        reject: undefined
+    };
+
+    const executor = function (resolve, reject) {
+        if (promiseCapability.resolve) {
+            throw new TypeError('promiseCapability.Resolve');
+        }
+
+        if (promiseCapability.reject) {
+            throw new TypeError('promiseCapability.Reject');
+        }
+
+        promiseCapability.resolve = resolve;
+        promiseCapability.reject = reject;
+    };
+
+    promiseCapability.promise = new Promise(executor);
+
+    if (!isCallable(promiseCapability.resolve)) {
+        throw new TypeError('!isCallable(promiseCapability.Resolve)');
+    }
+
+    if (!isCallable(promiseCapability.reject)) {
+        throw new TypeError('!isCallable(promiseCapability.Reject)');
+    }
+
+    return promiseCapability;
 }
 
 /**
@@ -277,7 +273,7 @@ function TriggerPromiseReactions (reactions, argument) {
  * @param {any} resultCapability 下一个 promise 的控制器
  * @returns 下一个 promise
  */
-function PerformPromiseThen (promise, onFulfilled, onRejected, resultCapability) {
+function performPromiseThen (promise, onFulfilled, onRejected, resultCapability) {
     if (!isCallable(onFulfilled)) {
         onFulfilled = undefined;
     }
@@ -293,93 +289,53 @@ function PerformPromiseThen (promise, onFulfilled, onRejected, resultCapability)
      * handler 当前需要执行的函数
      */
     const fulfillReaction = {
-        Capability: resultCapability,
-        Type: 'Fulfill',
-        Handler: onFulfilled
+        capability: resultCapability,
+        type: REACTION_TYPE.FULFILL,
+        handler: onFulfilled
     };
 
     const rejectReaction = {
-        Capability: resultCapability,
-        Type: 'Reject',
-        Handler: onRejected
+        capability: resultCapability,
+        type: REACTION_TYPE.REJECT,
+        handler: onRejected
     };
 
-    if (promise.PromiseState === 'pending') {
-        promise.PromiseFulfillReactions.push(fulfillReaction);
-        promise.PromiseRejectReactions.push(rejectReaction);
-    } else if (promise.PromiseState === 'fulfilled') {
-        const value = promise.PromiseResult;
+    if (promise['[[PromiseState]]'] === PROMISE_STATE.PENDING) {
+        promise['[[PromiseFulfillReactions]]'].push(fulfillReaction);
+        promise['[[PromiseRejectReactions]]'].push(rejectReaction);
+    } else if (promise['[[PromiseState]]'] === PROMISE_STATE.FULFILLED) {
+        const value = promise['[[PromiseResult]]'];
         setImmediate(function () {
-            PromiseReactionJob(fulfillReaction, value);
+            promiseReactionJob(fulfillReaction, value);
         });
-    } else if (promise.PromiseState === 'rejected') {
-        const reason = promise.PromiseResult;
-        if (!promise.PromiseIsHandled) {
-            HostPromiseRejectionTracker(promise, 'handle');
-        }
+    } else if (promise['[[PromiseState]]'] === PROMISE_STATE.REJECTED) {
+        const reason = promise['[[PromiseResult]]'];
         setImmediate(function () {
-            PromiseReactionJob(rejectReaction, reason);
+            promiseReactionJob(rejectReaction, reason);
         });
     }
 
     promise.PromiseIsHandled = true;
     // 返回的是下一个 promise
-    return resultCapability.Promise;
+    return resultCapability.promise;
 }
 
-/**
- * 返回一个 promiseCapability
- * 包含
- * promise
- * resolve：控制 promise 的 resolve
- * reject：控制 promise 的 reject
- * @returns promiseCapability
- */
-function NewPromiseCapability () {
-    const promiseCapability = {
-        Promise: undefined,
-        Resolve: undefined,
-        Reject: undefined
-    };
+Promise.resolve = function (x) {
+    const promiseCapability = newPromiseCapability();
 
-    const executor = function (resolve, reject) {
-        if (promiseCapability.Resolve) {
-            throw new TypeError('promiseCapability.Resolve');
-        }
+    promiseCapability.resolve(x);
 
-        if (promiseCapability.Reject) {
-            throw new TypeError('promiseCapability.Reject');
-        }
-
-        promiseCapability.Resolve = resolve;
-        promiseCapability.Reject = reject;
-    };
-
-    promiseCapability.Promise = new Promise(executor);
-
-    if (!isCallable(promiseCapability.Resolve)) {
-        throw new TypeError('!isCallable(promiseCapability.Resolve)');
-    }
-
-    if (!isCallable(promiseCapability.Reject)) {
-        throw new TypeError('!isCallable(promiseCapability.Reject)');
-    }
-
-    return promiseCapability;
+    return promiseCapability.promise;
 }
 
-Promise.deferred = function () {
-    const {
-        Resolve,
-        Reject,
-        Promise
-    } = NewPromiseCapability();
+Promise.reject = function (r) {
+    const promiseCapability = newPromiseCapability();
 
-    return {
-        resolve: Resolve,
-        reject: Reject,
-        promise: Promise
-    }
+    promiseCapability.reject(r);
+
+    return promiseCapability.promise;
 }
+
+Promise.deferred = newPromiseCapability;
 
 module.exports = Promise;
